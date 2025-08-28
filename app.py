@@ -9,12 +9,16 @@ import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
 from werkzeug.utils import secure_filename
 import io
+from dotenv import load_dotenv
+
+# Load environment variables from .env file (override existing ones)
+load_dotenv(override=True)
 
 app = Flask(__name__)
 
 # Configuration
 API_BASE_URL = "https://api.infip.pro"
-API_KEY = "infip-22a92ff3"
+API_KEY = os.environ.get('API_KEY')
 MEDIA_FOLDER = "media"
 
 # AWS S3 Configuration
