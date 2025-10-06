@@ -1,4 +1,6 @@
-from flask import Flask, render_template, request, jsonify, send_from_directory
+from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for, flash, session
+from flask_login import LoginManager, login_user, logout_user, login_required, current_user
+from flask_bcrypt import Bcrypt
 import requests
 import base64
 import os
@@ -6,124 +8,141 @@ import uuid
 from datetime import datetime
 import json
 import boto3
-from botocore.exceptions import ClientError, NoCredentialsError
+from botocore.exceptions import ClientError
 from werkzeug.utils import secure_filename
-import io
-from dotenv import load_dotenv
+import time
 
-# Load environment variables from .env file (override existing ones)
-load_dotenv(override=True)
+from config import Config
+from models import db, User, Image, UserStats
+from cloudwatch_helper import cloudwatch
 
 app = Flask(__name__)
+app.config.from_object(Config)
 
-# Configuration
-API_BASE_URL = "https://api.infip.pro"
-API_KEY = os.environ.get('API_KEY')
-MEDIA_FOLDER = "media"
+# Initialize extensions
+db.init_app(app)
+bcrypt = Bcrypt(app)
+login_manager = LoginManager(app)
+login_manager.login_view = 'login'
+login_manager.login_message = 'Please log in to access this page.'
 
-# AWS S3 Configuration
-AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID')
-AWS_SECRET_ACCESS_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY')
-AWS_REGION = os.environ.get('AWS_REGION', 'us-east-1')
-S3_BUCKET_NAME = os.environ.get('S3_BUCKET_NAME')
-USE_S3 = os.environ.get('USE_S3', 'false').lower() == 'true'
+# Ensure media folder exists
+os.makedirs(Config.MEDIA_FOLDER, exist_ok=True)
 
-# Ensure media folder exists for local storage
-os.makedirs(MEDIA_FOLDER, exist_ok=True)
+# Initialize AWS clients
+try:
+    if Config.USE_IAM_ROLE:
+        s3_client = boto3.client('s3', region_name=Config.AWS_REGION)
+        sns_client = boto3.client('sns', region_name=Config.AWS_REGION)
+    else:
+        s3_client = boto3.client('s3', region_name=Config.AWS_REGION)
+        sns_client = boto3.client('sns', region_name=Config.AWS_REGION)
+    print(f"AWS clients initialized successfully")
+except Exception as e:
+    print(f"Error initializing AWS clients: {str(e)}")
+    s3_client = None
+    sns_client = None
 
-# Initialize S3 client if credentials are available
-s3_client = None
-if USE_S3 and AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and S3_BUCKET_NAME:
-    try:
-        s3_client = boto3.client(
-            's3',
-            aws_access_key_id=AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-            region_name=AWS_REGION
-        )
-        print(f"S3 client initialized. Using bucket: {S3_BUCKET_NAME}")
-        print(f"S3 URL format: https://{S3_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/images/")
-    except Exception as e:
-        print(f"Failed to initialize S3 client: {str(e)}")
-        s3_client = None
-        USE_S3 = False
-else:
-    print("Using local storage (S3 not configured)")
-    USE_S3 = False
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
+# ==================== Helper Functions ====================
+
+def get_cloudfront_url(s3_key):
+    """Generate CloudFront URL for S3 object"""
+    if Config.CLOUDFRONT_DOMAIN:
+        return f"https://{Config.CLOUDFRONT_DOMAIN}/{s3_key}"
+    else:
+        return f"https://{Config.S3_BUCKET_NAME}.s3.{Config.AWS_REGION}.amazonaws.com/{s3_key}"
 
 def upload_to_s3(file_data, filename, content_type='image/png'):
-    """Upload file data to S3 bucket with public read access"""
-    if not s3_client or not S3_BUCKET_NAME:
+    """Upload file to S3"""
+    if not s3_client or not Config.S3_BUCKET_NAME:
         return None
     
     try:
-        # Upload without ACL (rely on bucket policy for public access)
+        s3_key = f"images/{filename}"
         s3_client.put_object(
-            Bucket=S3_BUCKET_NAME,
-            Key=f"images/{filename}",
+            Bucket=Config.S3_BUCKET_NAME,
+            Key=s3_key,
             Body=file_data,
             ContentType=content_type
         )
         
-        # Return the public URL
-        s3_url = f"https://{S3_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/images/{filename}"
-        print(f"Image uploaded to S3: {s3_url}")
-        return s3_url
+        cloudfront_url = get_cloudfront_url(s3_key)
+        print(f"Image uploaded to S3: {cloudfront_url}")
+        return s3_key, cloudfront_url
     except Exception as e:
         print(f"Error uploading to S3: {str(e)}")
-        return None
+        cloudwatch.record_error('S3Upload')
+        return None, None
 
-def list_s3_images():
-    """List all images from S3 bucket"""
-    if not s3_client or not S3_BUCKET_NAME:
-        return []
-    
+def save_image_from_url(image_url, filename):
+    """Download and save image"""
     try:
-        response = s3_client.list_objects_v2(
-            Bucket=S3_BUCKET_NAME,
-            Prefix='images/'
-        )
-        
-        images = []
-        for obj in response.get('Contents', []):
-            filename = obj['Key'].replace('images/', '')
-            if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
-                images.append({
-                    'filename': filename,
-                    'url': f"https://{S3_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/images/{filename}",
-                    'timestamp': obj['LastModified'].strftime("%Y-%m-%d %H:%M:%S"),
-                    'size': obj['Size']
-                })
-        
-        # Sort by modification time (newest first)
-        images.sort(key=lambda x: x['timestamp'], reverse=True)
-        return images
+        response = requests.get(image_url)
+        if response.status_code == 200:
+            if Config.USE_S3:
+                s3_key, cloudfront_url = upload_to_s3(response.content, filename)
+                if s3_key:
+                    return s3_key, cloudfront_url
+            
+            # Fallback to local storage
+            filepath = os.path.join(Config.MEDIA_FOLDER, filename)
+            with open(filepath, 'wb') as f:
+                f.write(response.content)
+            return filename, f'/media/{filename}'
+        return None, None
     except Exception as e:
-        print(f"Error listing S3 images: {str(e)}")
-        return []
+        print(f"Error saving image: {str(e)}")
+        cloudwatch.record_error('ImageSave')
+        return None, None
+
+def save_base64_image(base64_data, filename):
+    """Save base64 encoded image"""
+    try:
+        if base64_data.startswith('data:image'):
+            base64_data = base64_data.split(',')[1]
+        
+        image_data = base64.b64decode(base64_data)
+        
+        if Config.USE_S3:
+            s3_key, cloudfront_url = upload_to_s3(image_data, filename)
+            if s3_key:
+                return s3_key, cloudfront_url
+        
+        # Fallback to local storage
+        filepath = os.path.join(Config.MEDIA_FOLDER, filename)
+        with open(filepath, 'wb') as f:
+            f.write(image_data)
+        return filename, f'/media/{filename}'
+    except Exception as e:
+        print(f"Error saving base64 image: {str(e)}")
+        cloudwatch.record_error('Base64Save')
+        return None, None
 
 def get_available_models():
-    """Fetch available models from the API"""
+    """Fetch available models from API"""
     try:
         headers = {
-            "Authorization": f"Bearer {API_KEY}",
+            "Authorization": f"Bearer {Config.API_KEY}",
             "Content-Type": "application/json"
         }
-        response = requests.get(f"{API_BASE_URL}/v1/models", headers=headers)
+        response = requests.get(f"{Config.API_BASE_URL}/v1/models", headers=headers)
         if response.status_code == 200:
             return response.json()
-        else:
-            print(f"Error fetching models: {response.status_code} - {response.text}")
-            return {"data": []}
+        return {"data": []}
     except Exception as e:
         print(f"Error fetching models: {str(e)}")
+        cloudwatch.record_error('APIModels')
         return {"data": []}
 
 def generate_image(prompt, model_id, size="1024x1024", quality="standard", n=1):
-    """Generate image using the Infip API"""
+    """Generate image using Infip API"""
     try:
         headers = {
-            "Authorization": f"Bearer {API_KEY}",
+            "Authorization": f"Bearer {Config.API_KEY}",
             "Content-Type": "application/json"
         }
         
@@ -135,83 +154,205 @@ def generate_image(prompt, model_id, size="1024x1024", quality="standard", n=1):
             "n": n
         }
         
-        response = requests.post(f"{API_BASE_URL}/v1/images/generations", 
-                               headers=headers, 
-                               json=payload)
+        start_time = time.time()
+        response = requests.post(
+            f"{Config.API_BASE_URL}/v1/images/generations",
+            headers=headers,
+            json=payload
+        )
+        
+        elapsed_time = (time.time() - start_time) * 1000  # Convert to milliseconds
+        cloudwatch.record_time('APIResponseTime', elapsed_time)
         
         if response.status_code == 200:
             return response.json()
         else:
-            print(f"Error generating image: {response.status_code} - {response.text}")
+            cloudwatch.record_error('APIGeneration')
             return None
     except Exception as e:
         print(f"Error generating image: {str(e)}")
+        cloudwatch.record_error('APIGeneration')
         return None
 
-def save_image_from_url(image_url, filename):
-    """Download and save image from URL (local or S3)"""
+def send_sns_notification(email, subject, message):
+    """Send email notification via SNS"""
+    if not sns_client or not Config.SNS_TOPIC_ARN:
+        return False
+    
     try:
-        response = requests.get(image_url)
-        if response.status_code == 200:
-            if USE_S3:
-                # Upload to S3
-                s3_url = upload_to_s3(response.content, filename)
-                if s3_url:
-                    return s3_url
-                else:
-                    # Fallback to local storage if S3 fails
-                    print("S3 upload failed, falling back to local storage")
-            
-            # Save locally
-            filepath = os.path.join(MEDIA_FOLDER, filename)
-            with open(filepath, 'wb') as f:
-                f.write(response.content)
-            return f'/media/{filename}'
-        return None
+        response = sns_client.publish(
+            TopicArn=Config.SNS_TOPIC_ARN,
+            Subject=subject,
+            Message=message
+        )
+        print(f"SNS notification sent: {response['MessageId']}")
+        return True
     except Exception as e:
-        print(f"Error saving image: {str(e)}")
-        return None
+        print(f"Error sending SNS notification: {str(e)}")
+        return False
 
-def save_base64_image(base64_data, filename):
-    """Save base64 encoded image (local or S3)"""
-    try:
-        # Remove data URL prefix if present
-        if base64_data.startswith('data:image'):
-            base64_data = base64_data.split(',')[1]
-        
-        image_data = base64.b64decode(base64_data)
-        
-        if USE_S3:
-            # Upload to S3
-            s3_url = upload_to_s3(image_data, filename)
-            if s3_url:
-                return s3_url
-            else:
-                # Fallback to local storage if S3 fails
-                print("S3 upload failed, falling back to local storage")
-        
-        # Save locally
-        filepath = os.path.join(MEDIA_FOLDER, filename)
-        with open(filepath, 'wb') as f:
-            f.write(image_data)
-        return f'/media/{filename}'
-    except Exception as e:
-        print(f"Error saving base64 image: {str(e)}")
-        return None
+# ==================== Routes ====================
 
 @app.route('/')
 def index():
+    if current_user.is_authenticated:
+        return redirect(url_for('generate'))
+    return redirect(url_for('login'))
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if current_user.is_authenticated:
+        return redirect(url_for('dashboard'))
+    
+    if request.method == 'POST':
+        try:
+            username = request.form.get('username')
+            email = request.form.get('email')
+            password = request.form.get('password')
+            
+            # Validate input
+            if not username or not email or not password:
+                flash('All fields are required', 'error')
+                return render_template('register.html')
+            
+            # Check if user exists
+            if User.query.filter_by(username=username).first():
+                flash('Username already exists', 'error')
+                return render_template('register.html')
+            
+            if User.query.filter_by(email=email).first():
+                flash('Email already registered', 'error')
+                return render_template('register.html')
+            
+            # Create new user
+            hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
+            new_user = User(
+                username=username,
+                email=email,
+                password_hash=hashed_password
+            )
+            
+            db.session.add(new_user)
+            db.session.commit()
+            
+            # Create user stats
+            user_stats = UserStats(user_id=new_user.id)
+            db.session.add(user_stats)
+            db.session.commit()
+            
+            # Record metric
+            cloudwatch.record_user_registration()
+            
+            # Send welcome notification
+            send_sns_notification(
+                email,
+                'Welcome to AI Image Generator',
+                f'Welcome {username}! Your account has been created successfully.'
+            )
+            
+            flash('Registration successful! Please log in.', 'success')
+            return redirect(url_for('login'))
+            
+        except Exception as e:
+            db.session.rollback()
+            print(f"Registration error: {str(e)}")
+            cloudwatch.record_error('Registration')
+            flash('An error occurred. Please try again.', 'error')
+    
+    return render_template('register.html')
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for('dashboard'))
+    
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        
+        user = User.query.filter_by(username=username).first()
+        
+        if user and bcrypt.check_password_hash(user.password_hash, password):
+            login_user(user)
+            cloudwatch.record_login()
+            flash('Login successful!', 'success')
+            next_page = request.args.get('next')
+            return redirect(next_page or url_for('dashboard'))
+        else:
+            flash('Invalid username or password', 'error')
+    
+    return render_template('login.html')
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    flash('You have been logged out.', 'info')
+    return redirect(url_for('login'))
+
+@app.route('/dashboard')
+@login_required
+def dashboard():
+    stats = UserStats.query.filter_by(user_id=current_user.id).first()
+    recent_images = Image.query.filter_by(user_id=current_user.id).order_by(Image.created_at.desc()).limit(6).all()
+    
+    return render_template('dashboard.html', stats=stats, recent_images=recent_images)
+
+@app.route('/generate')
+@login_required
+def generate():
     return render_template('index.html')
 
+@app.route('/gallery')
+@login_required
+def gallery():
+    try:
+        images = Image.query.filter_by(user_id=current_user.id).order_by(Image.created_at.desc()).all()
+        
+        storage_info = {
+            'storage_type': 'AWS S3 + CloudFront' if Config.USE_S3 else 'Local Storage',
+            'bucket_name': Config.S3_BUCKET_NAME if Config.USE_S3 else None,
+            'total_images': len(images)
+        }
+        
+        return render_template('gallery.html', images=images, storage_info=storage_info)
+    except Exception as e:
+        print(f"Gallery error: {str(e)}")
+        cloudwatch.record_error('Gallery')
+        return render_template('gallery.html', images=[], storage_info={}, error=str(e))
+
+@app.route('/admin')
+@login_required
+def admin():
+    if not current_user.is_admin:
+        flash('Access denied. Admin privileges required.', 'error')
+        return redirect(url_for('dashboard'))
+    
+    total_users = User.query.count()
+    total_images = Image.query.count()
+    total_generations = db.session.query(db.func.sum(UserStats.total_generations)).scalar() or 0
+    
+    recent_users = User.query.order_by(User.created_at.desc()).limit(10).all()
+    recent_images = Image.query.order_by(Image.created_at.desc()).limit(10).all()
+    
+    return render_template('admin.html',
+                         total_users=total_users,
+                         total_images=total_images,
+                         total_generations=total_generations,
+                         recent_users=recent_users,
+                         recent_images=recent_images)
+
+# ==================== API Routes ====================
+
 @app.route('/api/models')
+@login_required
 def api_models():
-    """API endpoint to get available models"""
     models = get_available_models()
     return jsonify(models)
 
 @app.route('/api/generate', methods=['POST'])
+@login_required
 def api_generate():
-    """API endpoint to generate images"""
     try:
         data = request.get_json()
         prompt = data.get('prompt', '')
@@ -226,6 +367,7 @@ def api_generate():
         result = generate_image(prompt, model_id, size, quality)
         
         if not result:
+            cloudwatch.record_generation(success=False, model=model_id)
             return jsonify({'error': 'Failed to generate image'}), 500
         
         # Save images
@@ -235,23 +377,48 @@ def api_generate():
         for i, image_data in enumerate(result.get('data', [])):
             filename = f"{timestamp}_{uuid.uuid4().hex[:8]}_{i+1}.png"
             
-            # Check if image is URL or base64
+            # Save image
             if 'url' in image_data:
-                image_url = save_image_from_url(image_data['url'], filename)
+                s3_key, image_url = save_image_from_url(image_data['url'], filename)
             elif 'b64_json' in image_data:
-                image_url = save_base64_image(image_data['b64_json'], filename)
+                s3_key, image_url = save_base64_image(image_data['b64_json'], filename)
             else:
                 continue
             
             if image_url:
-                saved_images.append({
-                    'filename': filename,
-                    'url': image_url,
-                    'prompt': prompt,
-                    'model': model_id,
-                    'timestamp': timestamp,
-                    'storage': 'S3' if USE_S3 and image_url.startswith('https://') else 'Local'
-                })
+                # Save to database
+                new_image = Image(
+                    user_id=current_user.id,
+                    prompt=prompt,
+                    model=model_id,
+                    filename=filename,
+                    s3_key=s3_key if Config.USE_S3 else None,
+                    cloudfront_url=image_url if Config.USE_S3 else None,
+                    size=size,
+                    quality=quality
+                )
+                db.session.add(new_image)
+                
+                saved_images.append(new_image.to_dict())
+        
+        # Update user stats
+        stats = UserStats.query.filter_by(user_id=current_user.id).first()
+        if stats:
+            stats.total_generations += 1
+            stats.total_images += len(saved_images)
+            stats.last_generation = datetime.utcnow()
+        
+        db.session.commit()
+        
+        # Record metrics
+        cloudwatch.record_generation(success=True, model=model_id)
+        
+        # Send notification
+        send_sns_notification(
+            current_user.email,
+            'Image Generation Complete',
+            f'Your image has been generated successfully!\nPrompt: {prompt[:100]}...'
+        )
         
         return jsonify({
             'success': True,
@@ -260,64 +427,72 @@ def api_generate():
         })
         
     except Exception as e:
+        db.session.rollback()
+        print(f"Generation error: {str(e)}")
+        cloudwatch.record_error('Generation')
         return jsonify({'error': f'Server error: {str(e)}'}), 500
 
-@app.route('/media/<filename>')
-def serve_media(filename):
-    """Serve media files"""
-    return send_from_directory(MEDIA_FOLDER, filename)
+@app.route('/api/user/stats')
+@login_required
+def api_user_stats():
+    stats = UserStats.query.filter_by(user_id=current_user.id).first()
+    if stats:
+        return jsonify({
+            'total_generations': stats.total_generations,
+            'total_images': stats.total_images,
+            'last_generation': stats.last_generation.isoformat() if stats.last_generation else None
+        })
+    return jsonify({'total_generations': 0, 'total_images': 0, 'last_generation': None})
 
-@app.route('/gallery')
-def gallery():
-    """Display gallery of generated images"""
-    try:
-        images = []
-        
-        if USE_S3:
-            # Get images from S3
-            images = list_s3_images()
-        else:
-            # Get images from local storage
-            if os.path.exists(MEDIA_FOLDER):
-                for filename in os.listdir(MEDIA_FOLDER):
-                    if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
-                        filepath = os.path.join(MEDIA_FOLDER, filename)
-                        stat = os.stat(filepath)
-                        images.append({
-                            'filename': filename,
-                            'url': f'/media/{filename}',
-                            'timestamp': datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-                            'size': stat.st_size
-                        })
-            
-            # Sort by modification time (newest first)
-            images.sort(key=lambda x: x['timestamp'], reverse=True)
-        
-        storage_info = {
-            'storage_type': 'AWS S3' if USE_S3 else 'Local Storage',
-            'bucket_name': S3_BUCKET_NAME if USE_S3 else None,
-            'total_images': len(images)
-        }
-        
-        return render_template('gallery.html', images=images, storage_info=storage_info)
-    except Exception as e:
-        storage_info = {
-            'storage_type': 'AWS S3' if USE_S3 else 'Local Storage',
-            'bucket_name': S3_BUCKET_NAME if USE_S3 else None,
-            'total_images': 0
-        }
-        return render_template('gallery.html', images=[], storage_info=storage_info, error=str(e))
+@app.route('/media/<filename>')
+@login_required
+def serve_media(filename):
+    return send_from_directory(Config.MEDIA_FOLDER, filename)
 
 @app.route('/api/storage-info')
+@login_required
 def api_storage_info():
-    """API endpoint to get storage information"""
     return jsonify({
-        'storage_type': 'AWS S3' if USE_S3 else 'Local Storage',
-        'bucket_name': S3_BUCKET_NAME if USE_S3 else None,
-        'region': AWS_REGION if USE_S3 else None,
+        'storage_type': 'AWS S3 + CloudFront' if Config.USE_S3 else 'Local Storage',
+        'bucket_name': Config.S3_BUCKET_NAME if Config.USE_S3 else None,
+        'cloudfront_domain': Config.CLOUDFRONT_DOMAIN if Config.CLOUDFRONT_DOMAIN else None,
+        'region': Config.AWS_REGION if Config.USE_S3 else None,
         's3_configured': bool(s3_client),
-        'use_s3': USE_S3
+        'use_s3': Config.USE_S3
     })
+
+# ==================== Database Creation ====================
+
+@app.cli.command('init-db')
+def init_db():
+    """Initialize the database"""
+    db.create_all()
+    print('Database tables created successfully!')
+
+@app.cli.command('create-admin')
+def create_admin():
+    """Create admin user"""
+    username = input('Enter admin username: ')
+    email = input('Enter admin email: ')
+    password = input('Enter admin password: ')
+    
+    hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
+    admin_user = User(
+        username=username,
+        email=email,
+        password_hash=hashed_password,
+        is_admin=True
+    )
+    
+    db.session.add(admin_user)
+    db.session.commit()
+    
+    # Create stats
+    user_stats = UserStats(user_id=admin_user.id)
+    db.session.add(user_stats)
+    db.session.commit()
+    
+    print(f'Admin user {username} created successfully!')
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
