@@ -51,10 +51,12 @@ def load_user(user_id):
 
 def get_cloudfront_url(s3_key):
     """Generate CloudFront URL for S3 object"""
-    if Config.CLOUDFRONT_DOMAIN:
+    if Config.CLOUDFRONT_DOMAIN and Config.CLOUDFRONT_DOMAIN.strip():
         return f"https://{Config.CLOUDFRONT_DOMAIN}/{s3_key}"
     else:
+        # Return direct S3 URL if CloudFront is not configured
         return f"https://{Config.S3_BUCKET_NAME}.s3.{Config.AWS_REGION}.amazonaws.com/{s3_key}"
+
 
 def upload_to_s3(file_data, filename, content_type='image/png'):
     """Upload file to S3"""
@@ -398,27 +400,41 @@ def api_generate():
                     quality=quality
                 )
                 db.session.add(new_image)
-                
                 saved_images.append(new_image.to_dict())
         
-        # Update user stats
+        # Update or create user stats
         stats = UserStats.query.filter_by(user_id=current_user.id).first()
         if stats:
+            # Update existing stats
             stats.total_generations += 1
             stats.total_images += len(saved_images)
             stats.last_generation = datetime.utcnow()
+        else:
+            # Create new stats if doesn't exist
+            stats = UserStats(
+                user_id=current_user.id,
+                total_generations=1,
+                total_images=len(saved_images),
+                last_generation=datetime.utcnow()
+            )
+            db.session.add(stats)
         
+        # Commit all changes
         db.session.commit()
         
         # Record metrics
         cloudwatch.record_generation(success=True, model=model_id)
         
         # Send notification
-        send_sns_notification(
-            current_user.email,
-            'Image Generation Complete',
-            f'Your image has been generated successfully!\nPrompt: {prompt[:100]}...'
-        )
+        try:
+            send_sns_notification(
+                current_user.email,
+                'Image Generation Complete',
+                f'Your image has been generated successfully!\nPrompt: {prompt[:100]}...'
+            )
+        except Exception as e:
+            print(f"SNS notification failed: {str(e)}")
+            # Don't fail the whole request if SNS fails
         
         return jsonify({
             'success': True,
@@ -429,8 +445,11 @@ def api_generate():
     except Exception as e:
         db.session.rollback()
         print(f"Generation error: {str(e)}")
+        import traceback
+        traceback.print_exc()  # Print full stack trace for debugging
         cloudwatch.record_error('Generation')
         return jsonify({'error': f'Server error: {str(e)}'}), 500
+
 
 @app.route('/api/user/stats')
 @login_required
