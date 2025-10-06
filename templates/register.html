@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+
+{% block title %}Register - AI Image Generator{% endblock %}
+
+{% block content %}
+<section class="auth-section">
+    <div class="auth-container">
+        <div class="auth-card">
+            <div class="auth-header">
+                <i class="fas fa-user-plus"></i>
+                <h2>Create Account</h2>
+                <p>Join us and start creating</p>
+            </div>
+
+            <form method="POST" action="{{ url_for('register') }}" class="auth-form">
+                <div class="form-group">
+                    <label for="username">
+                        <i class="fas fa-user"></i>
+                        Username
+                    </label>
+                    <input 
+                        type="text" 
+                        id="username" 
+                        name="username" 
+                        required 
+                        class="form-input"
+                        placeholder="Choose a username"
+                        minlength="3"
+                        maxlength="50"
+                        autofocus
+                    >
+                </div>
+
+                <div class="form-group">
+                    <label for="email">
+                        <i class="fas fa-envelope"></i>
+                        Email
+                    </label>
+                    <input 
+                        type="email" 
+                        id="email" 
+                        name="email" 
+                        required 
+                        class="form-input"
+                        placeholder="Enter your email"
+                    >
+                </div>
+
+                <div class="form-group">
+                    <label for="password">
+                        <i class="fas fa-lock"></i>
+                        Password
+                    </label>
+                    <input 
+                        type="password" 
+                        id="password" 
+                        name="password" 
+                        required 
+                        class="form-input"
+                        placeholder="Create a strong password"
+                        minlength="6"
+                    >
+                </div>
+
+                <button type="submit" class="auth-btn">
+                    <i class="fas fa-user-plus"></i>
+                    Create Account
+                </button>
+            </form>
+
+            <div class="auth-footer">
+                <p>Already have an account? <a href="{{ url_for('login') }}">Login here</a></p>
+            </div>
+        </div>
+
+        <div class="auth-features">
+            <h3>Why join us?</h3>
+            <ul>
+                <li><i class="fas fa-star"></i> Free AI image generation</li>
+                <li><i class="fas fa-star"></i> Multiple AI models to choose from</li>
+                <li><i class="fas fa-star"></i> Cloud storage for your images</li>
+                <li><i class="fas fa-star"></i> Email notifications</li>
+                <li><i class="fas fa-star"></i> Usage analytics dashboard</li>
+            </ul>
+        </div>
+    </div>
+</section>
+{% endblock %}

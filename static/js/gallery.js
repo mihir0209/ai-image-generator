@@ -197,3 +197,138 @@ galleryStyle.textContent = `
     }
 `;
 document.head.appendChild(galleryStyle);
+
+let currentImageUrl = '';
+let currentFilename = '';
+
+// Setup event listeners when DOM is ready
+document.addEventListener('DOMContentLoaded', function() {
+    setupGalleryListeners();
+});
+
+function setupGalleryListeners() {
+    // Gallery item clicks
+    document.querySelectorAll('.gallery-item').forEach(item => {
+        item.addEventListener('click', function(e) {
+            // Don't open modal if clicking download button
+            if (e.target.closest('.download-btn')) {
+                return;
+            }
+            
+            const url = this.dataset.imageUrl;
+            const filename = this.dataset.filename;
+            const timestamp = this.dataset.timestamp;
+            const prompt = this.dataset.prompt;
+            
+            openImageModal(url, filename, timestamp, prompt);
+        });
+    });
+    
+    // Download button clicks
+    document.querySelectorAll('.download-btn').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            const url = this.dataset.downloadUrl;
+            const filename = this.dataset.downloadFilename;
+            downloadImage(url, filename);
+        });
+    });
+    
+    // Close modal on backdrop click
+    const modal = document.getElementById('imageModal');
+    if (modal) {
+        modal.addEventListener('click', function(e) {
+            if (e.target === modal || e.target.classList.contains('modal-backdrop')) {
+                closeImageModal();
+            }
+        });
+    }
+}
+
+function openImageModal(url, filename, timestamp, prompt) {
+    const modal = document.getElementById('imageModal');
+    const modalImage = document.getElementById('modalImage');
+    const modalTitle = document.getElementById('modalTitle');
+    const modalDate = document.getElementById('modalDate');
+    const modalPrompt = document.getElementById('modalPrompt');
+    
+    if (!modal) {
+        console.error('Modal element not found');
+        return;
+    }
+    
+    currentImageUrl = url;
+    currentFilename = filename;
+    
+    modalImage.src = url;
+    modalTitle.textContent = filename;
+    modalDate.textContent = timestamp;
+    if (modalPrompt) {
+        modalPrompt.textContent = prompt || 'No prompt available';
+    }
+    
+    modal.style.display = 'flex';
+    document.body.style.overflow = 'hidden'; // Prevent background scrolling
+}
+
+function closeImageModal() {
+    const modal = document.getElementById('imageModal');
+    if (modal) {
+        modal.style.display = 'none';
+        document.body.style.overflow = ''; // Restore scrolling
+    }
+}
+
+function downloadImage(url, filename) {
+    // Create a temporary link and trigger download
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.target = '_blank'; // Fallback for some browsers
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    
+    // Show success message
+    showToast('Download started!', 'success');
+}
+
+function downloadModalImage() {
+    downloadImage(currentImageUrl, currentFilename);
+}
+
+// Close modal with Escape key
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        closeImageModal();
+    }
+});
+
+// Toast notification function
+function showToast(message, type = 'info') {
+    const container = document.getElementById('toast-container') || createToastContainer();
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.innerHTML = `
+        <i class="fas fa-${type === 'success' ? 'check-circle' : type === 'error' ? 'exclamation-circle' : 'info-circle'}"></i>
+        ${message}
+    `;
+    container.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.classList.add('show');
+    }, 10);
+    
+    setTimeout(() => {
+        toast.classList.remove('show');
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
+}
+
+function createToastContainer() {
+    const container = document.createElement('div');
+    container.id = 'toast-container';
+    container.className = 'toast-container';
+    document.body.appendChild(container);
+    return container;
+}

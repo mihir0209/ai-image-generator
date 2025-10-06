@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+
+{% block title %}Admin Panel - AI Image Generator{% endblock %}
+
+{% block content %}
+<section class="admin-section">
+    <h2><i class="fas fa-cog"></i> Admin Dashboard</h2>
+    
+    <!-- System Stats -->
+    <div class="admin-stats">
+        <div class="admin-stat-card">
+            <i class="fas fa-users"></i>
+            <h3>{{ total_users }}</h3>
+            <p>Total Users</p>
+        </div>
+        <div class="admin-stat-card">
+            <i class="fas fa-images"></i>
+            <h3>{{ total_images }}</h3>
+            <p>Total Images</p>
+        </div>
+        <div class="admin-stat-card">
+            <i class="fas fa-magic"></i>
+            <h3>{{ total_generations }}</h3>
+            <p>Total Generations</p>
+        </div>
+    </div>
+
+    <!-- Recent Users -->
+    <div class="admin-section-box">
+        <h3><i class="fas fa-user-friends"></i> Recent Users</h3>
+        <table class="admin-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Username</th>
+                    <th>Email</th>
+                    <th>Joined</th>
+                    <th>Admin</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for user in recent_users %}
+                <tr>
+                    <td>{{ user.id }}</td>
+                    <td>{{ user.username }}</td>
+                    <td>{{ user.email }}</td>
+                    <td>{{ user.created_at.strftime('%Y-%m-%d') }}</td>
+                    <td>
+                        {% if user.is_admin %}
+                        <span class="badge badge-success">Yes</span>
+                        {% else %}
+                        <span class="badge badge-secondary">No</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Recent Images -->
+    <div class="admin-section-box">
+        <h3><i class="fas fa-images"></i> Recent Images</h3>
+        <div class="admin-images-grid">
+            {% for image in recent_images %}
+            <div class="admin-image-card">
+                <img src="{{ image.cloudfront_url or url_for('serve_media', filename=image.filename) }}" 
+                     alt="{{ image.prompt[:30] }}">
+                <p>{{ image.user.username }}</p>
+                <small>{{ image.created_at.strftime('%Y-%m-%d %H:%M') }}</small>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <!-- CloudWatch Metrics Link -->
+    <div class="admin-section-box">
+        <h3><i class="fas fa-chart-line"></i> Monitoring</h3>
+        <p>View detailed metrics and logs in AWS CloudWatch:</p>
+        <a href="https://console.aws.amazon.com/cloudwatch/" target="_blank" class="admin-btn">
+            <i class="fas fa-external-link-alt"></i>
+            Open CloudWatch Console
+        </a>
+    </div>
+</section>
+{% endblock %}

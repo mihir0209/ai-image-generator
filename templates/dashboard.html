@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - AI Image Generator{% endblock %}
+
+{% block content %}
+<section class="dashboard-section">
+    <!-- Welcome Banner -->
+    <div class="welcome-banner">
+        <div class="welcome-content">
+            <h2>Welcome back, {{ current_user.username }}! 👋</h2>
+            <p>Ready to create something amazing today?</p>
+        </div>
+        <a href="{{ url_for('generate') }}" class="cta-btn">
+            <i class="fas fa-magic"></i>
+            Generate New Image
+        </a>
+    </div>
+
+    <!-- Stats Cards -->
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-icon">
+                <i class="fas fa-images"></i>
+            </div>
+            <div class="stat-content">
+                <h3>{{ stats.total_images if stats else 0 }}</h3>
+                <p>Total Images</p>
+            </div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-icon">
+                <i class="fas fa-magic"></i>
+            </div>
+            <div class="stat-content">
+                <h3>{{ stats.total_generations if stats else 0 }}</h3>
+                <p>Generations</p>
+            </div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-icon">
+                <i class="fas fa-clock"></i>
+            </div>
+            <div class="stat-content">
+                <h3>{{ stats.last_generation.strftime('%b %d') if stats and stats.last_generation else 'Never' }}</h3>
+                <p>Last Activity</p>
+            </div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-icon">
+                <i class="fas fa-calendar"></i>
+            </div>
+            <div class="stat-content">
+                <h3>{{ current_user.created_at.strftime('%b %Y') }}</h3>
+                <p>Member Since</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent Images -->
+    <div class="recent-section">
+        <div class="section-header">
+            <h3><i class="fas fa-history"></i> Recent Images</h3>
+            <a href="{{ url_for('gallery') }}" class="view-all-link">
+                View All <i class="fas fa-arrow-right"></i>
+            </a>
+        </div>
+
+        {% if recent_images %}
+        <div class="recent-grid">
+            {% for image in recent_images %}
+            <div class="recent-card">
+                <div class="image-wrapper">
+                    <img src="{{ image.cloudfront_url or url_for('serve_media', filename=image.filename) }}" 
+                         alt="{{ image.prompt[:50] }}"
+                         loading="lazy">
+                </div>
+                <div class="recent-info">
+                    <p class="prompt-text">{{ image.prompt[:60] }}...</p>
+                    <span class="date-badge">
+                        <i class="fas fa-clock"></i>
+                        {{ image.created_at.strftime('%b %d, %Y') }}
+                    </span>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <i class="fas fa-image"></i>
+            <h4>No images yet</h4>
+            <p>Generate your first AI image to see it here!</p>
+            <a href="{{ url_for('generate') }}" class="empty-cta">
+                <i class="fas fa-magic"></i>
+                Start Creating
+            </a>
+        </div>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

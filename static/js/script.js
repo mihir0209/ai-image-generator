@@ -285,3 +285,175 @@ style.textContent = `
     }
 `;
 document.head.appendChild(style);
+// Load models on page load
+document.addEventListener('DOMContentLoaded', function() {
+    loadModels();
+    setupFormHandlers();
+});
+
+// Load available models
+async function loadModels() {
+    try {
+        const response = await fetch('/api/models');
+        const data = await response.json();
+        
+        const modelSelect = document.getElementById('model');
+        modelSelect.innerHTML = '';
+        
+        if (data.data && data.data.length > 0) {
+            data.data.forEach(model => {
+                const option = document.createElement('option');
+                option.value = model.id;
+                option.textContent = model.id;
+                modelSelect.appendChild(option);
+            });
+        } else {
+            modelSelect.innerHTML = '<option value="img3">img3 (default)</option>';
+        }
+    } catch (error) {
+        console.error('Error loading models:', error);
+        document.getElementById('model').innerHTML = '<option value="img3">img3 (default)</option>';
+    }
+}
+
+// Setup form handlers
+function setupFormHandlers() {
+    // Advanced options toggle
+    const toggleBtn = document.getElementById('toggleAdvanced');
+    const advancedContent = document.getElementById('advancedContent');
+    
+    if (toggleBtn) {
+        toggleBtn.addEventListener('click', function() {
+            advancedContent.classList.toggle('show');
+            const icon = this.querySelector('.fa-chevron-down');
+            icon.style.transform = advancedContent.classList.contains('show') ? 'rotate(180deg)' : 'rotate(0deg)';
+        });
+    }
+
+    // Form submission
+    const form = document.getElementById('imageForm');
+    if (form) {
+        form.addEventListener('submit', handleFormSubmit);
+    }
+}
+
+// Handle form submission
+async function handleFormSubmit(e) {
+    e.preventDefault();
+    
+    const prompt = document.getElementById('prompt').value;
+    const model = document.getElementById('model').value;
+    const size = document.getElementById('size').value;
+    const quality = document.getElementById('quality').value;
+    
+    if (!prompt || !model) {
+        showToast('Please fill in all required fields', 'error');
+        return;
+    }
+    
+    // Show loading
+    showLoading(true);
+    disableForm(true);
+    
+    try {
+        const response = await fetch('/api/generate', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                prompt: prompt,
+                model: model,
+                size: size,
+                quality: quality
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok && data.success) {
+            showToast(data.message, 'success');
+            displayResults(data.images);
+        } else {
+            showToast(data.error || 'Failed to generate image', 'error');
+        }
+    } catch (error) {
+        console.error('Error:', error);
+        showToast('An error occurred. Please try again.', 'error');
+    } finally {
+        showLoading(false);
+        disableForm(false);
+    }
+}
+
+// Display results
+function displayResults(images) {
+    const resultsSection = document.getElementById('resultsSection');
+    const resultsGrid = document.getElementById('resultsGrid');
+    
+    resultsGrid.innerHTML = '';
+    
+    images.forEach(image => {
+        const imageCard = document.createElement('div');
+        imageCard.className = 'result-card';
+        imageCard.innerHTML = `
+            <img src="${image.url}" alt="Generated image">
+            <div class="result-info">
+                <p class="result-prompt">${image.prompt}</p>
+                <div class="result-actions">
+                    <a href="${image.url}" download="${image.filename}" class="result-btn">
+                        <i class="fas fa-download"></i> Download
+                    </a>
+                </div>
+            </div>
+        `;
+        resultsGrid.appendChild(imageCard);
+    });
+    
+    resultsSection.style.display = 'block';
+    resultsSection.scrollIntoView({ behavior: 'smooth' });
+}
+
+// Show/hide loading overlay
+function showLoading(show) {
+    const overlay = document.getElementById('loadingOverlay');
+    overlay.style.display = show ? 'flex' : 'none';
+}
+
+// Enable/disable form
+function disableForm(disable) {
+    const form = document.getElementById('imageForm');
+    const inputs = form.querySelectorAll('input, select, textarea, button');
+    inputs.forEach(input => input.disabled = disable);
+    
+    const btnText = form.querySelector('.btn-text');
+    const spinner = form.querySelector('.spinner');
+    if (disable) {
+        btnText.style.display = 'none';
+        spinner.style.display = 'inline-block';
+    } else {
+        btnText.style.display = 'inline';
+        spinner.style.display = 'none';
+    }
+}
+
+// Show toast notification
+function showToast(message, type = 'info') {
+    const container = document.getElementById('toast-container');
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.innerHTML = `
+        <i class="fas fa-${type === 'success' ? 'check-circle' : type === 'error' ? 'exclamation-circle' : 'info-circle'}"></i>
+        ${message}
+    `;
+    container.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.classList.add('show');
+    }, 10);
+    
+    setTimeout(() => {
+        toast.classList.remove('show');
+        setTimeout(() => toast.remove(), 300);
+    }, 4000);
+}
