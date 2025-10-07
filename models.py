@@ -40,17 +40,25 @@ class Image(db.Model):
         return f'<Image {self.filename}>'
     
     def to_dict(self):
+        """Convert image object to dictionary with safe date handling"""
+        # Use current time if created_at is None (shouldn't happen, but safety first)
+        if self.created_at:
+            created_at_str = self.created_at.strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            created_at_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        
         return {
             'id': self.id,
             'prompt': self.prompt,
             'model': self.model,
             'filename': self.filename,
             'url': self.cloudfront_url or f'/media/{self.filename}',
-            'thumbnail': self.thumbnail_key,
-            'size': self.size,
-            'quality': self.quality,
-            'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S')
+            'thumbnail': self.thumbnail_key if self.thumbnail_key else None,
+            'size': self.size if self.size else '1024x1024',
+            'quality': self.quality if self.quality else 'standard',
+            'created_at': created_at_str
         }
+
 
 class UserStats(db.Model):
     __tablename__ = 'user_stats'
